@@ -1,98 +1,161 @@
+
+/**
+ * @file SampleSink.cpp
+ * @author Leon Farchau (leon2225)
+ * @brief 
+ * @version 0.1
+ * @date 03.01.2024
+ * 
+ * @copyright Copyright (c) 2024
+ * 
+ */
+
+/************************************************************
+ *  INCLUDES
+ ************************************************************/
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include "pico/stdlib.h"
+#include "hardware/i2c.h"
 
+#include "hardware/gpio.h"
 #include "pico_unicorn.hpp"
+#include "display.hpp"
+#include "debug_pins.h"
 
-using namespace pimoroni;
+#include "specificRegisters.h"
+#include "comInterface.h"
 
-PicoUnicorn pico_unicorn;
+/************************************************************
+ *  DEFINES
+ ************************************************************/
 
-void clearBar(uint32_t barIndex)
-{
-    for (uint32_t x = 0; x < 16; x++)
-    {
-        pico_unicorn.set_pixel(x, barIndex, 0, 0, 0);
-    }
-}
+const uint32_t BUTTON_A = pimoroni::PicoUnicorn::A;
+const uint32_t BUTTON_B = pimoroni::PicoUnicorn::B;
+const uint32_t BUTTON_X = pimoroni::PicoUnicorn::X;
+const uint32_t BUTTON_Y = pimoroni::PicoUnicorn::Y;
 
-void drawBar(uint32_t barIndex, uint32_t value, uint32_t color)
-{
-    // map 0-100 to 0-16
-    uint32_t barHeight = value * 16 / 100;
-    uint8_t r = (color >> 16) & 0xff;
-    uint8_t g = (color >> 8) & 0xff;
-    uint8_t b = color & 0xff;
+const uint32_t BUTTON_PINS[] = {
+    BUTTON_A,
+    BUTTON_B,
+    BUTTON_X,
+    BUTTON_Y};
 
-    for (uint32_t x = 0; x < barHeight; x++)
-    {
-        pico_unicorn.set_pixel(x, barIndex, r, g, b);
-    }
+/************************************************************
+ * Type definitions
+ * **********************************************************/
+#define SYNC_PIN 3
 
-    // clear the rest of the bar
-    for (uint32_t x = barHeight; x < 16; x++)
-    {
-        pico_unicorn.set_pixel(x, barIndex, 0, 0, 0);
-    }
-}
+#define I2C_ADDR 0x18
+#define SDA_PIN 4
+#define SCL_PIN 5
+
+
+/************************************************************
+ * Variables
+ * **********************************************************/
+DeviceSpecificConfiguration_t* g_config;
+
+
+/************************************************************
+ * Function prototypes
+ * **********************************************************/
+void setup();
+void asyncLoop();
+void dataCallback(void* data, uint32_t length);
+void configCallback(DeviceSpecificConfiguration_t* config, DeviceSpecificConfiguration_t* oldConfig);
+
+/************************************************************
+ * Functions
+ * **********************************************************/
 
 int main()
 {
-    bool a_pressed = false;
-    bool b_pressed = false;
-    bool x_pressed = false;
-    bool y_pressed = false;
+    setup();
 
-    uint32_t i = 0;
     while (true)
     {
-        i = i + 1;
-
-        // button test phase
-        float pulse = fmod(float(i) / 20.0f, M_PI * 2.0f);
-        int v = int((sin(pulse) * 50.0f) + 50.0f);
-
-        if (pico_unicorn.is_pressed(pico_unicorn.A))
-        {
-            drawBar(0, v, 0xff0000);
-            clearBar(1);
-            clearBar(2);
-            clearBar(3);
-        }
-        else if (pico_unicorn.is_pressed(pico_unicorn.B))
-        {
-            drawBar(1, v, 0x00ff00);
-            clearBar(0);
-            clearBar(2);
-            clearBar(3);
-        }
-        else if (pico_unicorn.is_pressed(pico_unicorn.X))
-        {
-            drawBar(2, v, 0x0000ff);
-            clearBar(0);
-            clearBar(1);
-            clearBar(3);
-        }
-        else if (pico_unicorn.is_pressed(pico_unicorn.Y))
-        {
-            drawBar(3, v, 0xffff00);
-            clearBar(0);
-            clearBar(1);
-            clearBar(2);
-        }
-        else
-        {
-            drawBar(0, v, 0xff0000);
-            drawBar(1, v, 0x00ff00);
-            drawBar(2, v, 0x0000ff);
-            drawBar(3, v, 0xffff00);
-        }
-
-        sleep_ms(10);
+        asyncLoop();
     }
 
     printf("done\n");
 
     return 0;
+}
+
+void setup()
+{
+    stdio_init_all();
+
+    gpio_init(DEBUG_PIN1);
+    gpio_init(DEBUG_PIN2);
+    gpio_init(DEBUG_PIN3);
+    gpio_set_dir(DEBUG_PIN1, GPIO_OUT);
+    gpio_set_dir(DEBUG_PIN2, GPIO_OUT);
+    gpio_set_dir(DEBUG_PIN3, GPIO_OUT);
+    gpio_put(DEBUG_PIN1, 1);
+    gpio_put(DEBUG_PIN2, 1);
+    gpio_put(DEBUG_PIN3, 1);
+
+    for (size_t i = 0; i < 4; i++)
+    {
+        gpio_init(BUTTON_PINS[i]);
+        gpio_set_dir(BUTTON_PINS[i], GPIO_IN);
+    }
+
+    display_init(0.7f);
+
+    gpio_init(SYNC_PIN);
+    gpio_set_dir(SYNC_PIN, GPIO_IN);
+
+    cominterfaceConfiguration config;
+    config.g_i2c = i2c0;
+    config.g_i2cAddr = I2C_ADDR;
+    config.g_sdaPin = SDA_PIN;
+    config.g_sclPin = SCL_PIN;
+    config.HOut_Callback = nullptr;
+    config.UpdateConfig_Callback = nullptr;
+
+    comInterfaceInit(&config);
+}
+
+void asyncLoop()
+{
+    static uint32_t lastSyncState = 0;
+    volatile uint32_t syncState = gpio_get(SYNC_PIN);
+    
+    if(syncState != lastSyncState)
+    {
+        lastSyncState = syncState;
+
+        if (syncState == 1)
+        {
+            gpio_put(DEBUG_PIN1, 1);
+            uint8_t data[4] = {0};
+            for (size_t i = 0; i < 4; i++)
+            {
+                data[i] = !gpio_get(BUTTON_PINS[i]);
+            }
+            
+            comInterfaceAddSample(data, 4);
+            gpio_put(DEBUG_PIN1, 0);
+        }
+    }
+}
+
+void dataCallback(void* data, uint32_t length)
+{
+    uint8_t *values = (uint8_t*) data;
+    uint32_t barNum = MIN(length, 6);
+
+    for (size_t bar = 0; bar < barNum; bar++)
+    {
+        display_drawBar(bar, values[bar]);
+    }
+}
+
+void configCallback(DeviceSpecificConfiguration_t* config, DeviceSpecificConfiguration_t* oldConfig)
+{
+    g_config = config;
 }

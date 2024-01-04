@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 
 # Initialise pico_sdk from installed location
 # (note this can come from environment, CMake cache etc)
@@ -26,10 +26,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(SampleSink SampleSink.cpp )
+add_executable(SampleSink SampleSink.cpp display.cpp i2c.cpp comInterface.cpp)
 
 pico_set_program_name(SampleSink "SampleSink")
-pico_set_program_version(SampleSink "0.1")
+pico_set_program_version(SampleSink "0.2")
 
 pico_enable_stdio_uart(SampleSink 1)
 pico_enable_stdio_usb(SampleSink 0)
@@ -55,6 +55,7 @@ target_link_libraries(SampleSink
         hardware_timer
         hardware_watchdog
         hardware_clocks
+        pico_multicore
         pico_stdlib 
         pico_graphics 
         pico_unicorn
