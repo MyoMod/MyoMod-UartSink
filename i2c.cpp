@@ -57,7 +57,7 @@ static uint32_t g_sclPin;
 static volatile uint16_t *g_HInStreamBuffer[2] = {0}; // Buffer that contains the pds data and the one byte status.
 static volatile uint16_t *g_HInPdsData[2] = {0};
 static volatile uint32_t g_pdsDataLen = 0;
-static volatile void *g_HOutStreamBuffer[2] = {0}; // Buffer that contains the HOut pds data
+static volatile uint8_t *g_HOutStreamBuffer[2] = {0}; // Buffer that contains the HOut pds data
 static volatile uint32_t g_HOutStreamBufferLen = 0;
 static volatile uint32_t g_HOutStreamBufferIndex = 0;
 static volatile uint32_t g_activePdsRxChannel = 0;
@@ -85,6 +85,7 @@ void __isr __not_in_flash_func(i2c_dma_irq_handler)(void);
 
 static void __always_inline H_IN_PdsData(void);
 static void __always_inline H_In_RegisterTransfer(uint32_t addr);
+static void H_Out_PdsData(void);
 static void __always_inline H_Out_RegisterTransfer(uint32_t addr);
 
 void I2C_Init(i2cInitConfiguration_t *initConfiguration)
@@ -102,7 +103,7 @@ void I2C_Init(i2cInitConfiguration_t *initConfiguration)
     H_Out_RegisterCallback = initConfiguration->H_Out_RegisterCallback;
 
     // Set HOut buffer pointers
-    g_HOutStreamBuffer[0] = initConfiguration->HOut_pdsBuffer;
+    g_HOutStreamBuffer[0] = (uint8_t*) initConfiguration->HOut_pdsBuffer;
     g_HOutStreamBuffer[1] = g_HOutStreamBuffer[0] + initConfiguration->HOut_pdsLength;
     g_HOutStreamBufferLen = initConfiguration->HOut_pdsLength;
 
@@ -263,6 +264,25 @@ static void __always_inline H_In_Status(void) {
 }
 
 /**
+ * @brief Initializes the rx dma to receive the pds from host.
+ * 
+ */
+static void H_Out_PdsData(void)
+{
+    // Write data to the tx fifo.
+    auto hw = g_i2c->hw;
+    g_activePdsRxChannel = !g_activePdsRxChannel;
+    if(!(g_PdsChannelFull & (1 << g_activePdsRxChannel)))
+    {
+        // Channel not full -> underflow
+        g_pdsUnderflow = true;
+    }
+
+    dma_channel_set_trans_count(g_i2cRxDmaChan, g_HOutStreamBufferLen, false);
+    dma_channel_set_write_addr(g_i2cRxDmaChan, g_HOutStreamBuffer[g_activePdsRxChannel], true);
+}
+
+/**
  * @brief Sets the value of the register with address addr to data.
  * 
  */
@@ -372,13 +392,18 @@ static void __isr __not_in_flash_func(i2c_slave_irq_handler)(void) {
             g_transactionPhase = TRANSPHASE_CMD_RECEIVED;       
             if (data & 0x80)
             {
-                // this is a pdo transaction.
+                // this is a pds transaction.
                 g_transactionAddr = 0xFF;
                 g_transactionType = TRANSTYPE_PDO;
 
                 bool HiDo = data & 0x40;
                 g_transactionDir = HiDo? TRANSDIR_HIDO : TRANSDIR_HODI;
                 
+                if(!HiDo)
+                {
+                    // This is HoDi -> config the dma to receive the pds.
+                    H_Out_PdsData();
+                }
             }
             else
             {

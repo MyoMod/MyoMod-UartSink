@@ -114,8 +114,8 @@ void setup()
     config.g_i2cAddr = I2C_ADDR;
     config.g_sdaPin = SDA_PIN;
     config.g_sclPin = SCL_PIN;
-    config.HOut_Callback = nullptr;
-    config.UpdateConfig_Callback = nullptr;
+    config.HOut_Callback = dataCallback;
+    config.UpdateConfig_Callback = configCallback;
 
     comInterfaceInit(&config);
 }

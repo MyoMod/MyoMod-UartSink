@@ -181,7 +181,7 @@ void comInterfaceAddSample(void *sample, size_t sampleSize)
         // command core1 to send the buffer
         if (!multicore_fifo_wready())
         {
-            __breakpoint();
+            //__breakpoint();
         }
         multicore_fifo_push_blocking(g_HInBufferIndex);
 
@@ -333,8 +333,12 @@ int core1_init(void)
     i2cConfig.i2cAddr = g_i2cAddr;
     i2cConfig.sdaPin = g_sdaPin;
     i2cConfig.sclPin = g_sclPin;
+
     i2cConfig.longestRegisterLength = longestRegisterLength;
     i2cConfig.HIn_pdsLength = HIN_BUFFER_SIZE;
+    i2cConfig.HOut_pdsBuffer = g_HOut_Buffer;
+    i2cConfig.HOut_pdsLength = HOUT_BUFFER_SIZE;
+
     i2cConfig.H_Out_NotifyPdsBufferFull = comInterfaceHandleHOutPDS;
     i2cConfig.H_In_GetRegisterCallback = ReadFromRegister;
     i2cConfig.H_In_GetStatusCallback = ReadStatus;
