@@ -17,7 +17,7 @@
 #include "specificRegisters.h"
 
 // Defines
-#define HOUT_NUMBER_OF_CHANNELS 7                                                                 // number of channels for the H_OUT stream
+#define HOUT_NUMBER_OF_CHANNELS 6                                                                 // number of channels for the H_OUT stream
 #define HOUT_ELEMENT_SIZE 1                                                                       // size in bytes of one element for the H_OUT stream
 #define HOUT_BUFFER_ELEMENTS_MAX 1                                                                // max number of elements in the buffer for the H_OUT stream
 #define HOUT_BUFFER_SIZE (HOUT_BUFFER_ELEMENTS_MAX * HOUT_ELEMENT_SIZE * HOUT_NUMBER_OF_CHANNELS) // size of the buffer in bytes for the H_OUT stream
@@ -29,6 +29,7 @@
 
 #define CMD_UPDATE_CONFIG 0x01 // command to update the configuration
 #define CMD_NEW_DATA 0x02      // command to process new HOut data
+#define CMD_SYNC 0x03          // command that indicates a sync from host
 
 // Variables
 /**** Register interface ****/
@@ -51,7 +52,7 @@ CommonDeviceInfo_t g_commonDeviceInfo =
     {
         0,                         // H_In_PacketSize
         5,                         // H_Out_PacketSize
-        "BarDis6Ch",               // Identifier
+        "SDSource",               // Identifier
         {0, 1, 0},                 // DeviceVersion
         {0, 1, 0},                 // ProtocolVersion
         StreamDir_t::HostInHostOut // SupportedStreamDirections
@@ -65,21 +66,13 @@ CommonDeviceConfiguration_t g_commonDeviceConfiguration =
 };
 DeviceSpecificStatus_t g_deviceSpecificStatus =
     {
-        1 // DisplayDetected
+        0 // plays
 };
-DeviceSpecificInfo_t g_deviceSpecificInfo =
-    {
-        "MAX11254", // DeviceSpecificInfo
-};
+DeviceSpecificInfo_t g_deviceSpecificInfo;
+
 DeviceSpecificConfiguration_t g_deviceSpecificConfiguration =
     {
-        0x00ff00, // BarColors[0]
-        0xffff00, // BarColors[1]
-        0xff00ff, // BarColors[2]
-        0x00ffff, // BarColors[3]
-        0xff0000, // BarColors[4]
-        0x0000ff, // BarColors[5]
-        0xffffff, // BarColors[6]
+        1 // ActiveFile
 };
 
 uint32_t g_regLength[] = {sizeof(g_statusByte), sizeof(g_commonDeviceStatus),
@@ -115,6 +108,7 @@ uint32_t g_sclPin;
 // Callbacks
 void (*HOut_Callback)(void *data, uint32_t length);
 void (*UpdateConfig_Callback)(DeviceSpecificConfiguration_t *config, DeviceSpecificConfiguration_t *oldConfig);
+void (*Sync_Callback)(void);
 
 // Private function prototypes
 void core1_main(void);
@@ -127,6 +121,7 @@ bool ReadFromRegister(void *buffer, uint32_t *length, uint32_t registerName);
 bool __always_inline ReadStatus(uint8_t *status);
 void __isr multicoreFiFoIRQHandler(void);
 void comInterfaceHandleConfigUpdate();
+void comInterfaceHandleSync();
 
 // Public functions
 
@@ -146,6 +141,7 @@ int32_t comInterfaceInit(cominterfaceConfiguration *config)
 
     HOut_Callback = config->HOut_Callback;
     UpdateConfig_Callback = config->UpdateConfig_Callback;
+    Sync_Callback = config->sync_callback;
 
     // initialize the mutexes
     for (uint32_t i = 0; i < NUM_REGISTERS; i++)
@@ -154,8 +150,14 @@ int32_t comInterfaceInit(cominterfaceConfiguration *config)
     }
 
     // initialize the buffers
-    memset(g_HIn_Buffer, 0, HOUT_BUFFER_SIZE * 2);
-    memset(g_HOut_Buffer, 0, HIN_BUFFER_SIZE * 2);
+    if(HOUT_BUFFER_SIZE > 0)
+    {
+        memset(g_HOut_Buffer, 0, HOUT_BUFFER_SIZE * 2);
+    }
+    if(HIN_BUFFER_SIZE > 0)
+    {
+        memset(g_HIn_Buffer, 0, HIN_BUFFER_SIZE * 2);
+    }
 
     multicore_launch_core1(core1_main);
 
@@ -167,14 +169,19 @@ int32_t comInterfaceInit(cominterfaceConfiguration *config)
 
 /**
  * @brief Adds a sample to the buffer and handles the buffer management
+ * 
+ * @note This function assumes that the samples are added in chronological order
+ *       (that means e.g. that all sammples of t0 are added before the first samples of t1).
+ *       The order of the channels does not matter.
  *
  * @param sample        pointer to the sample
- * @param sampleSize    size of the sample in bytes
+ * @param channel       channel number
  */
-void comInterfaceAddSample(void *sample, size_t sampleSize)
+void comInterfaceAddSample(void *sample, uint32_t channel)
 {
-    memcpy(&g_HIn_Buffer[g_HInBufferIndex][g_HInBufferOffset], sample, sampleSize);
-    g_HInBufferOffset += sampleSize;
+    uint32_t bufferIndex = (g_HInBufferOffset / (HIN_NUMBER_OF_CHANNELS * HIN_ELEMENT_SIZE)) * HIN_ELEMENT_SIZE + channel * (HIN_ELEMENT_SIZE * HIN_BUFFER_ELEMENTS_MAX);
+    memcpy(&g_HIn_Buffer[g_HInBufferIndex][bufferIndex], sample, HIN_ELEMENT_SIZE);
+    g_HInBufferOffset += HIN_ELEMENT_SIZE;
 
     if (g_HInBufferOffset >= HIN_BUFFER_SIZE)
     {
@@ -258,7 +265,6 @@ void __isr multicoreFiFoIRQHandler(void)
         uint32_t command = fifoData & 0x0000FFFF;
         uint32_t bufferIndex = (fifoData & 0xFFFF0000) >> 16;
 
-        assert(command == CMD_UPDATE_CONFIG || command == CMD_NEW_DATA);
         assert(bufferIndex < 2);
 
         switch (command)
@@ -272,7 +278,14 @@ void __isr multicoreFiFoIRQHandler(void)
                 HOut_Callback(g_HOut_Buffer[bufferIndex], HOUT_BUFFER_SIZE);
             }
             break;
+        case CMD_SYNC:
+            if (Sync_Callback != NULL)
+            {
+                Sync_Callback();
+            }
+            break;
         default:
+            //__breakpoint();
             break;
         }
     }
@@ -343,6 +356,8 @@ int core1_init(void)
     i2cConfig.H_In_GetRegisterCallback = ReadFromRegister;
     i2cConfig.H_In_GetStatusCallback = ReadStatus;
     i2cConfig.H_Out_RegisterCallback = WriteToRegister;
+
+    i2cConfig.sync_callback = comInterfaceHandleSync;
     I2C_Init(&i2cConfig);
 
     return 0;
@@ -428,6 +443,19 @@ void comInterfaceHandleHOutPDS(uint32_t bufferIndex)
         __breakpoint();
     }
     multicore_fifo_push_blocking(CMD_NEW_DATA | bufferIndex << 16);
+}
+
+/**
+ * @brief This function should be called from i2c when a sync is received.
+ *
+ */
+void comInterfaceHandleSync()
+{
+    if (!multicore_fifo_wready())
+    {
+        __breakpoint();
+    }
+    multicore_fifo_push_blocking(CMD_SYNC);
 }
 
 /**

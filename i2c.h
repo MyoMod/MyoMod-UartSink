@@ -31,6 +31,7 @@ struct i2cInitConfiguration_t {
     bool (*H_Out_RegisterCallback)(void* buffer, uint32_t length, uint32_t registerAddr);
     bool (*H_In_GetRegisterCallback)(void* buffer, uint32_t *length, uint32_t registerAddr);
     bool (*H_In_GetStatusCallback)(uint8_t *status);
+    void (*sync_callback)(void);
 };
 
 // Functions

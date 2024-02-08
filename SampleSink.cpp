@@ -45,18 +45,17 @@ const uint32_t BUTTON_PINS[] = {
 /************************************************************
  * Type definitions
  * **********************************************************/
-#define SYNC_PIN 3
-
+#define I2C_UNIT i2c1
 #define I2C_ADDR 0x18
-#define SDA_PIN 4
-#define SCL_PIN 5
+#define SDA_PIN 2
+#define SCL_PIN 3
 
 
 /************************************************************
  * Variables
  * **********************************************************/
 DeviceSpecificConfiguration_t* g_config;
-
+volatile bool g_sync = false;
 
 /************************************************************
  * Function prototypes
@@ -64,6 +63,7 @@ DeviceSpecificConfiguration_t* g_config;
 void setup();
 void asyncLoop();
 void dataCallback(void* data, uint32_t length);
+void syncCallback();
 void configCallback(DeviceSpecificConfiguration_t* config, DeviceSpecificConfiguration_t* oldConfig);
 
 /************************************************************
@@ -106,41 +106,37 @@ void setup()
 
     display_init(0.7f);
 
-    gpio_init(SYNC_PIN);
-    gpio_set_dir(SYNC_PIN, GPIO_IN);
-
     cominterfaceConfiguration config;
-    config.g_i2c = i2c0;
+    config.g_i2c = I2C_UNIT;
     config.g_i2cAddr = I2C_ADDR;
     config.g_sdaPin = SDA_PIN;
     config.g_sclPin = SCL_PIN;
     config.HOut_Callback = dataCallback;
     config.UpdateConfig_Callback = configCallback;
+    config.sync_callback = syncCallback;
 
     comInterfaceInit(&config);
 }
 
-void asyncLoop()
+void syncCallback()
 {
-    static uint32_t lastSyncState = 0;
-    volatile uint32_t syncState = gpio_get(SYNC_PIN);
-    
-    if(syncState != lastSyncState)
-    {
-        lastSyncState = syncState;
+    g_sync = true;
+}
 
-        if (syncState == 1)
+void asyncLoop()
+{    
+    if (g_sync)
+    {
+        g_sync = false;
+        gpio_put(DEBUG_PIN1, 1);
+        uint8_t data[4] = {0};
+        for (size_t i = 0; i < 4; i++)
         {
-            gpio_put(DEBUG_PIN1, 1);
-            uint8_t data[4] = {0};
-            for (size_t i = 0; i < 4; i++)
-            {
-                data[i] = !gpio_get(BUTTON_PINS[i]);
-            }
-            
-            comInterfaceAddSample(data, 4);
-            gpio_put(DEBUG_PIN1, 0);
+            data[i] = !gpio_get(BUTTON_PINS[i]);
+            comInterfaceAddSample(data, i);
         }
+        
+        gpio_put(DEBUG_PIN1, 0);
     }
 }
 
