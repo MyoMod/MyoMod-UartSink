@@ -31,22 +31,16 @@
  *  DEFINES
  ************************************************************/
 
-const uint32_t BUTTON_A = pimoroni::PicoUnicorn::A;
-const uint32_t BUTTON_B = pimoroni::PicoUnicorn::B;
-const uint32_t BUTTON_X = pimoroni::PicoUnicorn::X;
-const uint32_t BUTTON_Y = pimoroni::PicoUnicorn::Y;
-
-const uint32_t BUTTON_PINS[] = {
-    BUTTON_A,
-    BUTTON_B,
-    BUTTON_X,
-    BUTTON_Y};
+const uint32_t RX_PIN = 9;
+const uint32_t TX_PIN = 8;
+#define UART_ID uart1
+const uint32_t UART_SPEED = 115200;
 
 /************************************************************
  * Type definitions
  * **********************************************************/
 #define I2C_UNIT i2c1
-#define I2C_ADDR 0x18
+#define I2C_ADDR 0x38
 #define SDA_PIN 2
 #define SCL_PIN 3
 
@@ -98,13 +92,11 @@ void setup()
     gpio_put(DEBUG_PIN2, 1);
     gpio_put(DEBUG_PIN3, 1);
 
-    for (size_t i = 0; i < 4; i++)
-    {
-        gpio_init(BUTTON_PINS[i]);
-        gpio_set_dir(BUTTON_PINS[i], GPIO_IN);
-    }
+    // Setup uart interface
+    uart_init(UART_ID, UART_SPEED);
 
-    display_init(0.7f);
+    gpio_set_function(RX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(TX_PIN, GPIO_FUNC_UART);
 
     cominterfaceConfiguration config;
     config.g_i2c = I2C_UNIT;
@@ -128,15 +120,18 @@ void asyncLoop()
     if (g_sync)
     {
         g_sync = false;
-        gpio_put(DEBUG_PIN1, 1);
-        uint8_t data[4] = {0};
-        for (size_t i = 0; i < 4; i++)
-        {
-            data[i] = !gpio_get(BUTTON_PINS[i]);
-            comInterfaceAddSample(data, i);
-        }
-        
-        gpio_put(DEBUG_PIN1, 0);
+    }
+}
+
+char nibbleToChar(uint8_t nibble)
+{
+    if (nibble < 10)
+    {
+        return '0' + nibble;
+    }
+    else
+    {
+        return 'A' + nibble - 10;
     }
 }
 
@@ -145,10 +140,16 @@ void dataCallback(void* data, uint32_t length)
     uint8_t *values = (uint8_t*) data;
     uint32_t barNum = MIN(length, 6);
 
+    char outString[2*6+2] = {0};
+
     for (size_t bar = 0; bar < barNum; bar++)
     {
-        display_drawBar(bar, values[bar]);
+        outString[2*bar] = nibbleToChar(values[bar] >> 4);
+        outString[2*bar+1] = nibbleToChar(values[bar] & 0x0F);
     }
+    outString[2*barNum] = '\n';
+
+    uart_puts(UART_ID, outString);
 }
 
 void configCallback(DeviceSpecificConfiguration_t* config, DeviceSpecificConfiguration_t* oldConfig)
